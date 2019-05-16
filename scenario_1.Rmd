@@ -1,0 +1,319 @@
+---
+title: "TFM"
+author: "Antonio Milán Otero"
+date: "5/12/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libraries, include=FALSE}
+library(knitr)
+#library(lubridate)
+#library(VIM)
+library(stringr)
+#library(psych)
+library(GEOquery)
+library(affy)
+# RankProd have a dependency on Rmpfr and this library needs: libmprf-dev
+# in ubuntu or derivatives it can be installed with:
+# sudo apt-get install libmpfr-dev
+library(RankProd)
+library(multiClust)
+```
+
+# Study of the Transcriptional Function of Cyclin D1 in Leukemia
+
+## Load the datasets
+
+For this study we will make use of the following datasets available in the Gene Expression Omnibus (GEO) repository:
+
+* GSE21452
+* GSE25848
+
+The first step will be the loading of the datasets. For that purpose we will use the bioconductor package GEOquery. This package will allow us to load the dataset directly from the filesystem or to download it directly using the same command.
+In my case, I have already downloade the dataset, and I will use it from the filesystem.
+
+```{r, echo=FALSE}
+gse_21452 <- getGEO(filename="data/GSE21452_series_matrix.txt.gz")
+# In case you don't have it donwloaded, this dataset can be obtained with the command:
+# gse21452 <- getGEO("GSE21452", GSEMatrix=TRUE)
+# the only difference to keep in mind is that the second command will create a list of ExpressionSet, and therefore, the treatement of that class will be slidely different.
+```
+
+We explore our loaded data now.
+
+```{r}
+show(gse_21452)
+```
+
+```{r}
+head(pData(phenoData(gse_21452)))
+```
+
+```{r}
+# summary(pData(phenoData(gse_21452)))
+head(exprs(gse_21452),1)
+```
+
+Now we can load the data regarding DDR, following the same procedure as before.
+
+```{r}
+gse_25848 <- getGEO(filename="data/GSE25848_series_matrix.txt.gz")
+```
+
+```{r}
+show(gse_25848)
+```
+
+```{r}
+head(pData(phenoData(gse_25848)))
+```
+
+```{r}
+# summary(pData(phenoData(gse_21452)))
+head(exprs(gse_25848))
+```
+
+First thing to notice from this data is that we have many NA values.
+In our study we are going to make a comparison between the expressed genes in both datasets, and we can assume that if no data is available for that gene, it is not expressed and can be removed.
+
+Let's see how many NA do we have.
+
+```{r}
+sapply(data.frame(exprs(gse_21452)), function(x)(sum(is.na(x))))
+```
+
+```{r}
+sapply(data.frame(exprs(gse_25848)), function(x)(sum(is.na(x))))
+```
+
+```{r}
+length(data.frame(exprs(gse_25848))$GSM634846) - 32443
+```
+
+We have 32443 out of 48803 genes without any data, in other words, we have only 16360 genes with an expression value.
+
+```{r}
+# TODO: Instead of creating a new dataframe, maybe it's
+#       better to sustitute the existing data in the
+#       ExpressionSet by the one obtained here.
+gse_25848_clean <- data.frame(na.omit(exprs(gse_25848)))
+head(gse_25848_clean)
+```
+
+And finally we can check that the amount of rows are the expected.
+
+```{r}
+#length(data.frame(na.omit(exprs(gse_25848)))$GSM634846)
+length(gse_25848_clean$GSM634846)
+```
+
+A better way:
+
+```{r}
+#data.frame(na.omit(exprs(gse_25848)))
+#na.omit(gse_25848)
+# Remove the NA entries keeping the ExpressionSet object
+RMV <- which(apply(exprs(gse_25848), 1, function(x) any ( is.na(x))))
+gse_25848[-RMV,]
+```
+
+## Data Normalization
+
+Before running any normalization process, it is worth to have a look to the process that has been followed to generate the datasets.
+
+```{r}
+head(gse_25848$data_processing, 1)
+```
+
+```{r}
+head(gse_21452$data_processing.1, 1)
+```
+
+```{r}
+# TODO: As we have the p values for the expressionSet of each dataset, 
+#       I'm not sure about the necessity of more normalization.
+#       Maybe log2 or scale the data ... ?
+# update:
+#       Seems that the GSE21452 series have been log2 transformed.
+#       Let's log2 transform the data from the GSE25848.
+#       But I'm afraid that we should get the raw data and apply the
+#       same normalization process to both datasets.
+# update 2019-05-14:
+#       Not sure if this normalization is correct. Is it done by column,by row or taking the whole matrix?
+```
+
+Let's normalize the values of both datasets.
+
+```{r}
+#gse_21_norm <- scale(exprs(gse_21452))
+#gse_25_norm <- scale(gse_25848_clean)
+gse_21_norm2 <- t(scale(t(exprs(gse_21452))))
+gse_25_norm2 <- t(scale(t(gse_25848_clean)))
+```
+
+## Linear Model for Microarray Analysis
+
+Not necessary at this moment.
+
+## Intersection
+
+In order to do the intersection of both datasets we need to rank the most expresses genes and keep the top ones.
+For that purspose we can use the multiClust package.
+
+```{r}
+# Write the gene expression and clinical data to text files
+WriteMatrixToFile(tmpMatrix=gse_21_norm2, tmpFileName="GSE21452.Norm.expression.txt",
+    blnRowNames=TRUE, blnColNames=TRUE)
+    
+WriteMatrixToFile(tmpMatrix=gse_25_norm2, tmpFileName="GSE21452.Norm.expression.txt",
+    blnRowNames=TRUE, blnColNames=TRUE)
+```
+
+
+```{r}
+# This is just a test to check if CCND1 is selected without normalization.
+#WriteMatrixToFile(tmpMatrix=exprs(gse_21452), tmpFileName="GSE21452.Norm.expression.txt",
+#    blnRowNames=TRUE, blnColNames=TRUE)
+    
+#WriteMatrixToFile(tmpMatrix=gse_25848_clean, tmpFileName="GSE21452.Norm.expression.txt",
+#    blnRowNames=TRUE, blnColNames=TRUE)
+```
+
+(I don't like to use files in between ... but it is the only way right now)
+
+```{r}
+gse_21_expr_file <- system.file("extdata", "GSE21452.Norm.expression.txt", package = "multiClust")
+
+gse_25_expr_file <- system.file("extdata", "GSE21452.Norm.expression.txt", package = "multiClust")
+
+```
+
+
+```{r}
+# Call probe_ranking function
+# Select for 10000 probes
+# Choose genes using the SD_Rank method
+ranked.exprs_gse21 <- probe_ranking(input=gse_21_expr_file,
+    probe_number=10000,
+    probe_num_selection="Fixed_Probe_Num",
+    data.exp=gse_21_norm, 
+    method="SD_Rank")
+
+ranked.exprs_gse25 <- probe_ranking(input=gse_25_expr_file,
+    probe_number=10000,
+    probe_num_selection="Fixed_Probe_Num",
+    data.exp=gse_25_norm, 
+    method="SD_Rank")
+```
+
+Let's have a look to the generated selection.
+
+```{r}
+head(ranked.exprs_gse21)
+head(ranked.exprs_gse25)
+```
+
+
+The next step is to keep only the expressed genes appearing in both selection. As we can notice, genes have different names in each dataset, therefore, we will need to get the gene name from the featuredata.
+
+Using:
+- Rowname and featuredata$data$id, FeatureData$data$Symbol for the gse_25848
+- Rowname and featuredata$data$id, FeatureData$data$GeneSymbol
+
+```{r}
+ranked.exprs_gse21["208712_at",]
+#exprs(gse_21452)["208712_at",]
+gse_21_norm["208711_s_at",]
+ranked.exprs_gse21["208711_s_at",] # with 3000 is not selected.
+data.frame(exprs(gse_21452)["208711_s_at",])
+```
+
+```{r}
+ranked.exprs_gse25["ILMN_1688480",]
+#gse_25848_clean["ILMN_1688480",]
+```
+
+```{r}
+#colnames(pData(gse_21452))
+#pData(gse_21452)
+#pData(featureData(gse_21452))#$ENTREZ_GENE_ID
+#featureNames(gse_21452)
+
+#match(pData(featureData(gse_25848))$Entrez_Gene_ID,
+#      pData(featureData(gse_21452))$ENTREZ_GENE_ID)
+#match(pData(featureData(gse_21452))$ID,
+#      rownames(data.frame(ranked.exprs_gse21)))
+gse_21_idx <- match(rownames(data.frame(ranked.exprs_gse21)),
+                    pData(featureData(gse_21452))$ID)
+gse_25_idx <- match(rownames(data.frame(ranked.exprs_gse25)),
+                    pData(featureData(gse_25848))$ID)
+```
+
+```{r}
+head(exprs(gse_21452)[gse_21_idx,])
+#gse_21452[gse_21_idx]
+pData(featureData(gse_21452[gse_21_idx]))$ENTREZ_GENE_ID
+```
+
+```{r}
+#aux <- pData(featureData(gse_21452))
+#aux$`Gene Symbol`
+gse_21_ids <- pData(featureData(gse_21452))$ENTREZ_GENE_ID[gse_21_idx]
+gse_25_ids <- pData(featureData(gse_25848))$Entrez_Gene_ID[gse_25_idx]
+
+gse_21_ids <- pData(featureData(gse_21452))$`Gene Symbol`[gse_21_idx]
+gse_25_ids <- pData(featureData(gse_25848))$Symbol[gse_25_idx]
+
+# There are genes without ID!!!! Let's use symbols!!!
+head(gse_21_ids)
+head(gse_25_ids)
+
+```
+
+Before merging, we need to remove the multiple symbols entries and keep only the first one.
+
+```{r}
+#unlist(strsplit(gse_21_ids[3], "[ ///]"))[1]
+
+get_first_item <- function(items){
+  first_item <- unlist(strsplit(items, "[ ///]"))[1]
+  return(first_item)
+}
+get_first_item(gse_21_ids)
+
+#strsplit(gse_21_ids, '^\w+.\w+')
+symbols_gse21 <- unlist(lapply(gse_21_ids, get_first_item))
+symbols_gse25 <- unlist(lapply(gse_25_ids, get_first_item))
+```
+
+```{r}
+#symbols_gse21 <- unlist(lapply(pData(featureData(gse_21452[gse_21_idx]))$ENTREZ_GENE_ID, get_first_item))
+#symbols_gse21
+#pData(featureData(gse_21452[gse_21_idx]))$ENTREZ_GENE_ID
+pData(featureData(gse_21452[gse_21_idx]))
+```
+
+```{r}
+matched_idx <- match(symbols_gse21, symbols_gse25)
+#gse_21_idx
+matched_idx
+#data.frame(na.omit(gse_21_norm2[matched_idx,]))
+```
+
+```{r}
+na.omit(symbols_gse21[matched_idx])
+```
+
+## RankProd Analysis
+
+```{r}
+RP.adv.out <- RP.advance()
+```
+
+## Feature Selection
+
+## GSEA
