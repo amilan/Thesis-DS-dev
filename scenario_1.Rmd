@@ -328,10 +328,18 @@ head(pData(featureData(common_gse_21))$ENTREZ_GENE_ID)
 head(pData(featureData(common_gse_25))$Entrez_Gene_ID)
 ```
 
+## Normalization (now for sure ...)
+
+Now that we are going to merge the datasets, this normalization is needed.
+
 ```{r}
 # Now that we are going to merge the datasets, this normalization is needed.
-exprs(common_gse_21) <- t(scale(t(exprs(common_gse_21))))
-exprs(common_gse_25) <- t(scale(t(exprs(common_gse_25))))
+#exprs(common_gse_21) <- t(scale(t(exprs(common_gse_21))))
+#exprs(common_gse_25) <- t(scale(t(exprs(common_gse_25))))
+
+# try to log2 the gse_25 instead of z-norm both
+exprs(common_gse_25) <- log2(exprs(common_gse_25))
+head(exprs(common_gse_25))
 ```
 
 Let's merge the datasets by adding the columns of common_gse_25 to common_gse_21
@@ -339,6 +347,14 @@ Let's merge the datasets by adding the columns of common_gse_25 to common_gse_21
 ```{r}
 #common_gse <- common_gse_21
 common_gse <- cbind(exprs(common_gse_21), exprs(common_gse_25))
+
+# Remove the NA entries keeping the ExpressionSet object
+
+#nrow(common_gse) - length(which(apply(common_gse, 1, function(x) any ( is.na(x)))))
+
+idx_to_rmv <- which(apply(common_gse, 1, function(x) any ( is.na(x))))
+common_gse <- common_gse[-idx_to_rmv,]
+
 ```
 
 ## RankProd Analysis
