@@ -117,8 +117,8 @@ A better way:
 #data.frame(na.omit(exprs(gse_25848)))
 #na.omit(gse_25848)
 # Remove the NA entries keeping the ExpressionSet object
-RMV <- which(apply(exprs(gse_25848), 1, function(x) any ( is.na(x))))
-gse_25848[-RMV,]
+idx_to_rmv <- which(apply(exprs(gse_25848), 1, function(x) any ( is.na(x))))
+gse_25848 <- gse_25848[-idx_to_rmv,]
 ```
 
 ## Data Normalization
@@ -151,13 +151,20 @@ Let's normalize the values of both datasets.
 ```{r}
 #gse_21_norm <- scale(exprs(gse_21452))
 #gse_25_norm <- scale(gse_25848_clean)
-gse_21_norm2 <- t(scale(t(exprs(gse_21452))))
-gse_25_norm2 <- t(scale(t(gse_25848_clean)))
+#gse_21_norm2 <- t(scale(t(exprs(gse_21452))))
+#gse_25_norm2 <- t(scale(t(gse_25848_clean)))
+```
+
+```{r}
+# Instead of here we can also apply this normalization just before merging the datasets.
+# As we are going to select the top ranked genes from each individual dataset, first.
+#exprs(gse_21452) <- t(scale(t(exprs(gse_21452))))
+#exprs(gse_25848) <- t(scale(t(exprs(gse_25848))))
 ```
 
 ## Linear Model for Microarray Analysis
 
-Not necessary at this moment.
+Not necessary at this moment as we are going to select the Genes using the package multiClust.
 
 ## Intersection
 
@@ -166,21 +173,21 @@ For that purspose we can use the multiClust package.
 
 ```{r}
 # Write the gene expression and clinical data to text files
-WriteMatrixToFile(tmpMatrix=gse_21_norm2, tmpFileName="GSE21452.Norm.expression.txt",
-    blnRowNames=TRUE, blnColNames=TRUE)
+#WriteMatrixToFile(tmpMatrix=gse_21_norm2, tmpFileName="GSE21452.Norm.expression.txt",
+#    blnRowNames=TRUE, blnColNames=TRUE)
     
-WriteMatrixToFile(tmpMatrix=gse_25_norm2, tmpFileName="GSE21452.Norm.expression.txt",
-    blnRowNames=TRUE, blnColNames=TRUE)
+#WriteMatrixToFile(tmpMatrix=gse_25_norm2, tmpFileName="GSE21452.Norm.expression.txt",
+#    blnRowNames=TRUE, blnColNames=TRUE)
 ```
 
 
 ```{r}
 # This is just a test to check if CCND1 is selected without normalization.
-#WriteMatrixToFile(tmpMatrix=exprs(gse_21452), tmpFileName="GSE21452.Norm.expression.txt",
-#    blnRowNames=TRUE, blnColNames=TRUE)
+WriteMatrixToFile(tmpMatrix=exprs(gse_21452), tmpFileName="GSE21452.Norm.expression.txt",
+    blnRowNames=TRUE, blnColNames=TRUE)
     
-#WriteMatrixToFile(tmpMatrix=gse_25848_clean, tmpFileName="GSE21452.Norm.expression.txt",
-#    blnRowNames=TRUE, blnColNames=TRUE)
+WriteMatrixToFile(tmpMatrix=exprs(gse_25848), tmpFileName="GSE21452.Norm.expression.txt",
+    blnRowNames=TRUE, blnColNames=TRUE)
 ```
 
 (I don't like to use files in between ... but it is the only way right now)
@@ -200,13 +207,15 @@ gse_25_expr_file <- system.file("extdata", "GSE21452.Norm.expression.txt", packa
 ranked.exprs_gse21 <- probe_ranking(input=gse_21_expr_file,
     probe_number=10000,
     probe_num_selection="Fixed_Probe_Num",
-    data.exp=gse_21_norm, 
+    data.exp=exprs(gse_21452), 
+    #method="CV_Rank")
     method="SD_Rank")
 
 ranked.exprs_gse25 <- probe_ranking(input=gse_25_expr_file,
     probe_number=10000,
     probe_num_selection="Fixed_Probe_Num",
-    data.exp=gse_25_norm, 
+    data.exp=exprs(gse_25848), 
+    #method="CV_Rank")
     method="SD_Rank")
 ```
 
@@ -225,16 +234,19 @@ Using:
 - Rowname and featuredata$data$id, FeatureData$data$GeneSymbol
 
 ```{r}
+# Just checking that cyclin d1 is in the selection.
 ranked.exprs_gse21["208712_at",]
 #exprs(gse_21452)["208712_at",]
-gse_21_norm["208711_s_at",]
+#gse_21_norm["208711_s_at",]
 ranked.exprs_gse21["208711_s_at",] # with 3000 is not selected.
-data.frame(exprs(gse_21452)["208711_s_at",])
+#data.frame(exprs(gse_21452)["208711_s_at",])
+ranked.exprs_gse25["ILMN_1688480",]
 ```
 
 ```{r}
 ranked.exprs_gse25["ILMN_1688480",]
 #gse_25848_clean["ILMN_1688480",]
+data.frame(exprs(gse_25848["ILMN_1688480",]))
 ```
 
 ```{r}
@@ -247,6 +259,8 @@ ranked.exprs_gse25["ILMN_1688480",]
 #      pData(featureData(gse_21452))$ENTREZ_GENE_ID)
 #match(pData(featureData(gse_21452))$ID,
 #      rownames(data.frame(ranked.exprs_gse21)))
+
+# Indexes for the genes to keep as
 gse_21_idx <- match(rownames(data.frame(ranked.exprs_gse21)),
                     pData(featureData(gse_21452))$ID)
 gse_25_idx <- match(rownames(data.frame(ranked.exprs_gse25)),
@@ -254,25 +268,59 @@ gse_25_idx <- match(rownames(data.frame(ranked.exprs_gse25)),
 ```
 
 ```{r}
-head(exprs(gse_21452)[gse_21_idx,])
+# Get the final ExpressionSet with only the ranked genes
+ranked_gse_21 <- gse_21452[gse_21_idx,]
+ranked_gse_25 <- gse_25848[gse_25_idx,]
+```
+
+```{r}
+#head(exprs(gse_21452)[gse_21_idx,])
 #gse_21452[gse_21_idx]
-pData(featureData(gse_21452[gse_21_idx]))$ENTREZ_GENE_ID
+#pData(featureData(gse_21452[gse_21_idx]))$ENTREZ_GENE_ID
 ```
 
 ```{r}
 #aux <- pData(featureData(gse_21452))
 #aux$`Gene Symbol`
-gse_21_ids <- pData(featureData(gse_21452))$ENTREZ_GENE_ID[gse_21_idx]
-gse_25_ids <- pData(featureData(gse_25848))$Entrez_Gene_ID[gse_25_idx]
+#gse_21_ids <- pData(featureData(gse_21452))$ENTREZ_GENE_ID[gse_21_idx]
+#gse_25_ids <- pData(featureData(gse_25848))$Entrez_Gene_ID[gse_25_idx]
 
-gse_21_ids <- pData(featureData(gse_21452))$`Gene Symbol`[gse_21_idx]
-gse_25_ids <- pData(featureData(gse_25848))$Symbol[gse_25_idx]
+gse_21_ids <- pData(featureData(ranked_gse_21))$ENTREZ_GENE_ID
+gse_25_ids <- pData(featureData(ranked_gse_25))$Entrez_Gene_ID
+
+#gse_21_ids <- pData(featureData(gse_21452))$`Gene Symbol`[gse_21_idx]
+#gse_25_ids <- pData(featureData(gse_25848))$Symbol[gse_25_idx]
 
 # There are genes without ID!!!! Let's use symbols!!!
+##head(gse_21_ids)
+##head(gse_25_ids)
+
+### GB_ACC
+#gse_21_ids <- pData(featureData(ranked_gse_21))$GB_ACC
+#gse_25_ids <- pData(featureData(ranked_gse_25))$GB_ACC
+
 head(gse_21_ids)
 head(gse_25_ids)
-
 ```
+
+```{r}
+# Remove the . on gse_25_ids
+
+#get_first_item <- function(items){
+#  first_item <- unlist(strsplit(items, "[.]"))[1]
+#  return(first_item)
+#}
+
+#gse_25_ids <- unlist(lapply(gse_25_ids, get_first_item))
+#length(gse_21_ids)
+#length(gse_25_ids)
+sapply(data.frame(gse_21_ids), function(x)(sum(is.na(x))))
+sapply(data.frame(gse_25_ids), function(x)(sum(is.na(x))))
+```
+```{r}
+#gse_25_ids <- na.omit(gse_25_ids)
+```
+
 
 Before merging, we need to remove the multiple symbols entries and keep only the first one.
 
@@ -283,29 +331,94 @@ get_first_item <- function(items){
   first_item <- unlist(strsplit(items, "[ ///]"))[1]
   return(first_item)
 }
-get_first_item(gse_21_ids)
+#get_first_item(gse_21_ids)
 
 #strsplit(gse_21_ids, '^\w+.\w+')
-symbols_gse21 <- unlist(lapply(gse_21_ids, get_first_item))
-symbols_gse25 <- unlist(lapply(gse_25_ids, get_first_item))
+gse_21_ids <- as.numeric(unlist(lapply(gse_21_ids, get_first_item)))
+#symbols_gse25 <- unlist(lapply(gse_25_ids, get_first_item))
 ```
 
 ```{r}
 #symbols_gse21 <- unlist(lapply(pData(featureData(gse_21452[gse_21_idx]))$ENTREZ_GENE_ID, get_first_item))
 #symbols_gse21
 #pData(featureData(gse_21452[gse_21_idx]))$ENTREZ_GENE_ID
-pData(featureData(gse_21452[gse_21_idx]))
+#pData(featureData(gse_21452[gse_21_idx]))
 ```
 
 ```{r}
-matched_idx <- match(symbols_gse21, symbols_gse25)
-#gse_21_idx
-matched_idx
-#data.frame(na.omit(gse_21_norm2[matched_idx,]))
+# Get the indexes from gse_25 that appears in gse_21
+matched_idx <- match(gse_21_ids, gse_25_ids)
+#sort(matched_idx)
+#matched_idx
+#pData(featureData(ranked_gse_21[2]))$ENTREZ_GENE_ID
+#pData(featureData(ranked_gse_25[23]))$Entrez_Gene_ID
+#pData(featureData(ranked_gse_25[matched_idx]))$Entrez_Gene_ID
+
+# Remove the entries that doesn't appear in the ranked_gse_21
+#which(apply(exprs(ranked_gse_25[matched_idx]), 1, function(x) any ( is.na(x))))
+#idx_to_rmv <- which(apply(exprs(ranked_gse_25[matched_idx]), 1, function(x) any ( is.na(x))))
+#idx_to_rmv
+#common_gse_25 <- ranked_gse_25[-idx_to_rmv,]
+#common_gse_25 <- ranked_gse_25[sort(matched_idx)]
+
+###
+idx_to_keep <- is.na(matched_idx)
+#!idx_to_keep
+common_gse_21 <- ranked_gse_21[!idx_to_keep]
+###
+
+common_gse_25 <- ranked_gse_25[matched_idx]
+#remove NA
+idx_to_rmv <- which(apply(pData(featureData(common_gse_25)), 1, function(x) any ( is.na(x))))
+#idx_to_rmv
+common_gse_25 <- common_gse_25[-idx_to_rmv,]
 ```
 
 ```{r}
-na.omit(symbols_gse21[matched_idx])
+# As we have removed the NAs in gse_25, we need to match again
+gse_21_ids_2 <- pData(featureData(common_gse_21))$ENTREZ_GENE_ID
+gse_25_ids_2 <- pData(featureData(common_gse_25))$Entrez_Gene_ID
+gse_25_ids_2
+gse_21_ids_2 <- as.numeric(unlist(lapply(gse_21_ids_2, get_first_item)))
+gse_21_ids_2
+
+matched_idx_2 <- match(gse_25_ids_2, gse_21_ids_2)
+length(matched_idx_2)
+matched_idx_2
+common_gse_21 <- common_gse_21[matched_idx_2]
+##remove NA
+#idx_to_rmv <- which(apply(pData(featureData(common_gse_21)), 1, function(x) any ( is.na(x))))
+#common_gse_21 <- common_gse_21[-idx_to_rmv,]
+```
+
+```{r}
+# Get the common genes from gse_21
+#matched_idx
+#idx_to_keep <- is.na(matched_idx)
+#!idx_to_keep
+#common_gse_21 <- ranked_gse_21[!idx_to_keep]
+
+common_gse_21 <- common_gse_21[-idx_to_rmv,]
+```
+
+```{r}
+# Merge both datasets in one by adding columns
+
+head(pData(featureData(common_gse_21))$ENTREZ_GENE_ID)
+head(pData(featureData(common_gse_25))$Entrez_Gene_ID)
+```
+
+```{r}
+# Now that we are going to merge the datasets, this normalization is needed.
+exprs(common_gse_21) <- t(scale(t(exprs(common_gse_21))))
+exprs(common_gse_25) <- t(scale(t(exprs(common_gse_25))))
+```
+
+Let's merge the datasets by adding the columns of common_gse_25 to common_gse_21
+
+```{r}
+#common_gse <- common_gse_21
+common_gse <- cbind(exprs(common_gse_21), exprs(common_gse_25))
 ```
 
 ## RankProd Analysis
