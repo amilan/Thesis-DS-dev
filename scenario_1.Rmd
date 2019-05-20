@@ -16,7 +16,6 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r load_libraries, include=FALSE}
 library(knitr)
 #library(lubridate)
-#library(VIM)
 library(stringr)
 #library(psych)
 library(GEOquery)
@@ -26,6 +25,8 @@ library(affy)
 # sudo apt-get install libmpfr-dev
 library(RankProd)
 library(multiClust)
+library(caret)
+library(VIM) # for the KNN imputation
 ```
 
 # Study of the Transcriptional Function of Cyclin D1 in Leukemia
@@ -346,15 +347,23 @@ Let's merge the datasets by adding the columns of common_gse_25 to common_gse_21
 
 ```{r}
 #common_gse <- common_gse_21
-common_gse <- cbind(exprs(common_gse_21), exprs(common_gse_25))
+# common_gse <- cbind(exprs(common_gse_21), exprs(common_gse_25))
+# Better use cbind2 and get everything as data.frame
+common_gse <- cbind.data.frame(data.frame(exprs(common_gse_21)), data.frame(exprs(common_gse_25)))
 
 # Remove the NA entries keeping the ExpressionSet object
 
-#nrow(common_gse) - length(which(apply(common_gse, 1, function(x) any ( is.na(x)))))
+nrow(common_gse) - length(which(apply(common_gse, 1, function(x) any ( is.na(x)))))
 
 idx_to_rmv <- which(apply(common_gse, 1, function(x) any ( is.na(x))))
 common_gse <- common_gse[-idx_to_rmv,]
 
+```
+
+```{r}
+# Note: there are many repeated entries due to the repited entries in gse_25
+#       And even worst, seems that CCND1 is not present in the dataset
+common_gse["X208712_at"]
 ```
 
 ## RankProd Analysis
@@ -399,3 +408,117 @@ head(tables$Table2)
 ## Feature Selection
 
 ## GSEA
+
+----
+
+# Cyclin D1 Correlation
+
+As the previous attempt was not satisfactory let's try another approach.
+This time, we are going to scale both datasets, merge them and find the correlation of each gene with the Cyclin D1
+
+```{r}
+gse_21_norm <- gse_21452
+gse_25_norm <- gse_25848
+
+exprs(gse_21_norm) <- t(scale(t(exprs(gse_21452))))
+exprs(gse_25_norm) <- t(scale(t(exprs(gse_25848))))
+```
+
+```{r}
+gse_21_norm_ids <- pData(featureData(gse_21_norm))$ENTREZ_GENE_ID
+gse_21_norm_ids <- as.numeric(unlist(lapply(gse_21_norm_ids, get_first_item)))
+gse_25_norm_ids <- pData(featureData(gse_25_norm))$Entrez_Gene_ID
+head(gse_21_norm_ids)
+head(gse_25_norm_ids)
+```
+
+```{r}
+# Get the indexes from gse_25 that appears in gse_21
+matched_norm_idx <- match(gse_21_norm_ids, gse_25_norm_ids)
+matched_norm_idx
+
+# Keep only the matched elements in gse_21
+idx_to_keep <- is.na(matched_norm_idx)
+idx_to_keep
+common_gse_21_norm <- gse_21_norm[!idx_to_keep]
+
+# Keep only the matched elements gse_25
+common_gse_25_norm <- gse_25_norm[matched_norm_idx]
+
+# Remove NA
+idx_to_rmv <- which(apply(pData(featureData(common_gse_25_norm)), 1, function(x) any ( is.na(x))))
+idx_to_rmv
+common_gse_25_norm <- common_gse_25_norm[-idx_to_rmv,]
+```
+
+As we have removed the NAs in gse_25, we need to match again.
+
+```{r}
+gse_21_norm_ids <- pData(featureData(common_gse_21_norm))$ENTREZ_GENE_ID
+gse_21_norm_ids <- as.numeric(unlist(lapply(gse_21_norm_ids, get_first_item)))
+gse_25_norm_ids <- pData(featureData(common_gse_25_norm))$Entrez_Gene_ID
+
+matched_norm_idx <- match(gse_25_norm_ids, gse_21_norm_ids)
+common_gse_21_norm <- common_gse_21_norm[matched_norm_idx]
+```
+
+Just to be sure, let's check the first values of the entrez_gene_ids for both datasets.
+
+```{r}
+head(pData(featureData(common_gse_21_norm))$ENTREZ_GENE_ID)
+head(pData(featureData(common_gse_25_norm))$Entrez_Gene_ID)
+```
+
+```{r}
+common_gse_norm <- cbind.data.frame(data.frame(exprs(common_gse_21_norm)),
+                                    data.frame(exprs(common_gse_25_norm)))
+
+#common_gse_norm <- cbind(common_gse_21_norm, common_gse_25_norm)
+#exprs(common_gse_norm)
+#common_gse_norm <- common_gse_21_norm
+#exprs(common_gse_norm) <- cbind(data.frame(exprs(common_gse_21_norm)),
+#                                data.frame(exprs(common_gse_25_norm)))
+```
+
+```{r}
+# Let's look at the CCND1 row
+common_gse_norm["X208711_s_at", ]
+```
+
+```{r}
+cor(common_gse_norm, common_gse_norm["X208711_s_at", ])
+```
+
+### Extra: kNN imputation
+
+As we want to analyze the CCND1, and it has Nan that will be filtered later on, we should
+make an imputation of those values if we want to keep that gene in the posterior processes.
+
+We can make the imputation using the mean value of the observations or we can also make a KNN to make this imputation based on the euclidean distance between observations.
+In this case, I think it has more sense to use the mean imputation
+
+```{r}
+#offers$salarioMax <- kNN(offers)$salarioMax
+# As we want to analyze the CCND1, and it has Nan that will be filtered later on, we should
+# make an imputation of those values if we want to keep that gene in the posterior processes.
+t(exprs(common_gse_25["ILMN_1688480"]))
+kNN(t(data.frame(exprs(common_gse_25["ILMN_1688480"]))))
+t(data.frame(exprs(common_gse_25["ILMN_1688480"])))
+
+# one option is to impute with the mean (check library Hmisc)
+mean(na.omit(t(data.frame(exprs(common_gse_25["ILMN_1688480"])))))
+t(data.frame(exprs(common_gse_25["ILMN_1688480"])))
+```
+
+```{r}
+library(Hmisc)
+```
+```{r}
+#impute(t(data.frame(exprs(common_gse_25["ILMN_1688480"]))), mean)
+#aux <- apply(t(data.frame(exprs(common_gse_25))), 1, function(x)(impute(x, mean)))
+aux <- apply(data.frame(exprs(common_gse_25)), 1, function(x)(impute(x, mean)))
+aux[,"ILMN_1688480"]
+#head(t(aux))
+#is.na(t(aux))
+sapply(data.frame(exprs(gse_25848)), function(x)(sum(is.na(x))))
+```
