@@ -26,7 +26,15 @@ library(affy)
 library(RankProd)
 library(multiClust)
 library(caret)
+# Imputation
 library(VIM) # for the KNN imputation
+library(Hmisc) # useful for the mean imputation
+library(randomForest)
+# fgsea from bioconductor
+library(fgsea)
+# 
+library(ArrayTools)
+library(stringr)
 ```
 
 # Study of the Transcriptional Function of Cyclin D1 in Leukemia
@@ -107,6 +115,8 @@ idx_to_rmv <- which(apply(exprs(gse_25848), 1, function(x) any ( is.na(x))))
 gse_25848 <- gse_25848[-idx_to_rmv,]
 ```
 
+We must also notice that the assay data in the expression set (obtained by expr(gse_XXXXX)) has features (genes) as rows and samples as columns. This is important to keep in mind for the later data processing.
+
 ## Data Normalization
 
 Before running any normalization process, it is worth to have a look to the process that has been followed to generate the datasets.
@@ -147,7 +157,7 @@ Let's normalize the values of both datasets.
 
 Not necessary at this moment as we are going to select the Genes using the package multiClust.
 
-## Intersection
+## Ranking of Genes
 
 In order to do the intersection of both datasets we need to rank the most expresses genes and keep the top ones.
 For that purspose we can use the multiClust package.
@@ -196,6 +206,18 @@ head(ranked.exprs_gse21)
 head(ranked.exprs_gse25)
 ```
 
+The above methodology is equivalent to executing:
+
+```{r}
+# Desviació Estàndard
+aux <- data.frame(sort(sapply(data.frame(t(exprs(gse_25848))), sd), decreasing = TRUE))
+rownames(aux)
+#data.frame(exprs(gse_25848)[rownames(aux),])
+aux <- gse_25848[rownames(aux),]
+head(exprs(aux), 10000)
+```
+
+## Intersection
 
 The next step is to keep only the expressed genes appearing in both selection. As we can notice, genes have different names in each dataset, therefore, we will need to get the gene name from the featuredata.
 
@@ -329,9 +351,12 @@ head(pData(featureData(common_gse_21))$ENTREZ_GENE_ID)
 head(pData(featureData(common_gse_25))$Entrez_Gene_ID)
 ```
 
-## Normalization (now for sure ...)
+## Log2 Normalization
 
-Now that we are going to merge the datasets, this normalization is needed.
+Our goal now is to prepare the data to be ready to apply a RankProd process to identify the up/down regulated genes.
+For achieving this goal, we need to merge both datasets, and they need to have values in a similar scale, otherwise they will not express the same information.
+RankProd is based on some statistical tests that will perform better if our data is log2 transformed.
+As our data in gse_21 is already log2 transformed, we only need to apply this transformation to the gse_25.
 
 ```{r}
 # Now that we are going to merge the datasets, this normalization is needed.
@@ -339,9 +364,88 @@ Now that we are going to merge the datasets, this normalization is needed.
 #exprs(common_gse_25) <- t(scale(t(exprs(common_gse_25))))
 
 # try to log2 the gse_25 instead of z-norm both
-exprs(common_gse_25) <- log2(exprs(common_gse_25))
-head(exprs(common_gse_25))
+#exprs(common_gse_25) <- log2(exprs(common_gse_25))
+#head(exprs(common_gse_25))
+
+common_gse_25_log2 <- data.frame(log2(exprs(common_gse_25)))
+head(common_gse_25_log2)
+
 ```
+
+### Treatment of Generated NaN
+
+After the log2 transformation, some NaNs has been produced. Specially important is the one for the CCND1.
+
+As we want to analyze the CCND1, and it has NaNs that will be filtered later on, we should
+make an imputation of those values if we want to keep that gene in the posterior processes.
+
+We can make the imputation using the mean value of the observations or we can also make a KNN to make this imputation based on the euclidean distance between observations.
+In this case, it has more sense to use the mean imputation.
+
+We can check the NaN values generated for the CCND1:
+```{r}
+#t(exprs(common_gse_25["ILMN_1688480"]))
+#kNN(t(data.frame(exprs(common_gse_25["ILMN_1688480"]))))
+#t(data.frame(exprs(common_gse_25["ILMN_1688480"])))
+t(common_gse_25_log2["ILMN_1688480",])
+```
+
+```{r}
+# one option is to impute with the mean (check library Hmisc)
+mean(na.omit(t(common_gse_25_log2["ILMN_1688480",])))
+#t(data.frame(exprs(common_gse_25["ILMN_1688480"])))
+```
+
+```{r}
+common_gse_25_log2 <- data.frame(t(apply(common_gse_25_log2, 1, function(x)(impute(x, mean)))))
+common_gse_25_log2["ILMN_1688480",]
+#head(t(aux))
+head(common_gse_25_log2)
+```
+
+```{r}
+#impute(t(data.frame(exprs(common_gse_25["ILMN_1688480"]))), mean)
+#aux <- apply(t(data.frame(exprs(common_gse_25))), 1, function(x)(impute(x, mean)))
+##aux <- apply(data.frame(exprs(common_gse_25)), 1, function(x)(impute(x, mean)))
+##aux[,"ILMN_1688480"]
+##head(t(aux))
+#is.na(t(aux))
+#validObject(common_gse_25)
+#exprs(common_gse_25) <- t(aux) # weird error here, but actually, we don't need to move it here, we can merge it later.
+#head(exprs(common_gse_25))
+```
+
+Finally, let's check that no NaNs are present in the dataset
+
+```{r}
+#sapply(data.frame(exprs(common_gse_25)), function(x)(sum(is.na(x))))
+#sapply(data.frame(t(aux)), function(x)(sum(is.na(x))))
+sapply(common_gse_25_log2, function(x)(sum(is.na(x))))
+#is.na(t(aux))
+#data.frame(t(aux))
+```
+
+As we can see, there are still 3 rows that contains NaN. Looking at the entries, we can see that the three entries have NaNs in all the columns, and therefore, no value has been imputed.
+
+```{r}
+#common_gse_25_log2
+```
+
+```{r}
+# A manual inspection of the data has been done before to identify the three rows to inspect.
+common_gse_25_log2[c("ILMN_1759330", "ILMN_1812473", "ILMN_1759330.1"), ]
+```
+
+As we don't have data in this rows, we should eliminate them from the dataset, but that should be done after merging, otherwise the match of the rows will be broken.
+
+Let's have a look to the common_gse_21.
+```{r}
+sapply(data.frame(exprs(common_gse_21)), function(x)(sum(is.na(x))))
+```
+
+We don't have any NaN in this dataset, and we can keep it as it is now.
+
+### Merging datasets
 
 Let's merge the datasets by adding the columns of common_gse_25 to common_gse_21
 
@@ -349,7 +453,18 @@ Let's merge the datasets by adding the columns of common_gse_25 to common_gse_21
 #common_gse <- common_gse_21
 # common_gse <- cbind(exprs(common_gse_21), exprs(common_gse_25))
 # Better use cbind2 and get everything as data.frame
-common_gse <- cbind.data.frame(data.frame(exprs(common_gse_21)), data.frame(exprs(common_gse_25)))
+# common_gse <- cbind.data.frame(data.frame(exprs(common_gse_21)), data.frame(exprs(common_gse_25)))
+common_gse <- cbind.data.frame(data.frame(exprs(common_gse_21)), common_gse_25_log2)
+
+common_gse_good_names <- common_gse_21
+common_gse_good_names <- as.matrix(cbind.data.frame(data.frame(exprs(common_gse_21)), common_gse_25_log2))
+class(common_gse_good_names)
+rownames(common_gse_good_names) <- rownames(exprs(common_gse_21))
+head(common_gse_good_names)
+
+# We need to set the rownames as the entrez genes ids. This will be required by the GSEA method to be executed later.
+# There are duplicated ids, and rownames will fail ... let's create a new vector with that names
+common_gse_egid <- unlist(lapply(pData(featureData(common_gse_21))$ENTREZ_GENE_ID, get_first_item))
 
 # Remove the NA entries keeping the ExpressionSet object
 
@@ -357,14 +472,18 @@ nrow(common_gse) - length(which(apply(common_gse, 1, function(x) any ( is.na(x))
 
 idx_to_rmv <- which(apply(common_gse, 1, function(x) any ( is.na(x))))
 common_gse <- common_gse[-idx_to_rmv,]
-
+common_gse_egid <- common_gse_egid[-idx_to_rmv]
 ```
 
 ```{r}
 # Note: there are many repeated entries due to the repited entries in gse_25
 #       And even worst, seems that CCND1 is not present in the dataset
-common_gse["X208712_at"]
+# update: It was not present because it was containing some NaNs, after imputation it is present again.
+common_gse["X208712_at",]
+#common_gse_21["208712_at"]
+common_gse_good_names["208712_at",]
 ```
+
 
 ## RankProd Analysis
 
@@ -373,8 +492,9 @@ First, we need to prepare the two groups.
 
 ```{r}
 ncol(exprs(common_gse_21))
+#c2 <- rep(1, ncol(exprs(common_gse_25)))
 c1 <- rep(0, ncol(exprs(common_gse_21)))
-c2 <- rep(1, ncol(exprs(common_gse_25)))
+c2 <- rep(1, ncol(common_gse_25_log2))
 cl <- c(c1, c2)
 cl
 ```
@@ -385,7 +505,12 @@ cl
 RP.out <- RankProducts(common_gse, cl,
                        logged=TRUE, rand=42,
                        gene.names=rownames(common_gse),
+                       #gene.names=common_gse_egid,
                        plot = TRUE)
+```
+
+```{r}
+#RP.out$RPrank
 ```
 
 
@@ -393,6 +518,7 @@ RP.out <- RankProducts(common_gse, cl,
 # No significant values using a cutoff on pfp
 #tables <- topGene(RP.out, cutoff = 0.05, method = "pfp", gene.names=rownames(common_gse))
 tables <- topGene(RP.out, cutoff = 0.05, method = "pval", gene.names=rownames(common_gse))
+#tables <- topGene(RP.out, cutoff = 0.05, method = "pval", gene.names=common_gse_egid)
 ```
 
 ```{r}
@@ -405,7 +531,454 @@ head(tables$Table2)
 #tables$Table2
 ```
 
+Let's have a look to the amount of up and down regulated genes.
+
+```{r}
+length(rownames(tables$Table1))
+```
+
+```{r}
+length(rownames(tables$Table2))
+```
+
+```{r}
+# Let's look for the CCND1
+#tables$Table2["X208712_at",]
+tables$Table2["595", ]
+```
+
+As we can see, the CCND1 has been selected in the down regulated list of genes.
+
+We can get the expression set of the up/down regulated genes.
+
+```{r}
+up_common_genes <- common_gse[rownames(tables$Table1), ]
+down_common_genes <- common_gse[rownames(tables$Table2), ]
+```
+
 ## Feature Selection
+
+### Random Forest
+
+```{r}
+set.seed(42)
+#urf <- randomForest(t(common_gse_norm))
+#urf <- randomForest(t(common_gse))
+urf <- randomForest(t(up_common_genes))
+```
+
+```{r}
+#summary(urf)
+#MDSplot(urf)
+```
+
+```{r}
+urf_vars <- data.frame(importance(urf))
+urf_vars
+rownames(urf_vars)[order(-urf_vars)]
+# get the top 20
+urf_top <- head(urf_vars[order(-urf_vars),], 20)
+head(urf_top)
+#rownames(urf_vars)
+#rownames(urf_vars[order(-urf_vars),])
+```
+
+```{r}
+look_up_table_gene_names <- data.frame(common_gse_egid)
+rownames(look_up_table_gene_names) <- rownames(common_gse)
+look_up_table_gene_names
+top_20_genes_rf <- look_up_table_gene_names[head(rownames(urf_vars)[order(-urf_vars)], 20),]
+```
+
+```{r}
+top_genes_table1_idx <- match(rownames(tables$Table1), top_20_genes_rf)
+top_genes_table2_idx <- match(rownames(tables$Table2), top_20_genes_rf)
+head(top_genes_table1_idx)
+```
+
+```{r}
+# Keep only the matched elements in table1
+idx_to_keep <- is.na(top_genes_table1_idx)
+#is.na(top_genes_table1_idx)
+top_genes_table1 <- tables$Table1[!idx_to_keep,]
+top_genes_table1
+```
+
+```{r}
+# Keep only the matched elements in table1
+idx_to_keep <- is.na(top_genes_table2_idx)
+#is.na(top_genes_table1_idx)
+top_genes_table2 <- tables$Table2[!idx_to_keep,]
+top_genes_table2
+```
+
+
+## GSEA
+
+### FGSEA
+
+```{r}
+c2_pathways <- gmtPathways("data/c2.cp.v6.2.entrez.gmt")
+#c2_pathways
+```
+
+```{r}
+no_dupl_top_genes_table1 <- top_genes_table1[!duplicated(rownames(top_genes_table1)),]
+no_dupl_top_genes_table2 <- top_genes_table2[!duplicated(rownames(top_genes_table2)),]
+no_dupl_top_genes_table2
+```
+
+```{r}
+fgsea_output <- fgsea(pathways=c2_pathways,
+                      stats = no_dupl_top_genes_table1[,"P.value"],
+                      minSize = 1,
+                      maxSize = 500,
+                      nperm = 1000
+                      )
+```
+
+```{r}
+#head(fgsea_output[order(pval), ])
+fgsea_output
+no_dupl_top_genes_table2[, "P.value"]
+```
+
+```{r}
+fgsea_output <- fgsea(pathways=c2_pathways,
+                      stats = no_dupl_top_genes_table2[,"P.value"],
+                      minSize = 1,
+                      maxSize = 500,
+                      nperm = 1000
+                      )
+fgsea_output
+```
+
+```{r}
+# top 6 enriched pathways
+head(fgsea_output[order(pval), ])
+```
+
+```{r}
+# number of significant pathways at padj < 0.01
+sum(fgsea_output[, padj < 0.01])
+```
+
+```{r}
+# plot the most significantly enriched pathway
+plotEnrichment(c2_pathways[[head(fgsea_output[order(pval), ], 1)$pathway]],
+               no_dupl_top_genes_table2[,"P.value"]) + labs(title=head(fgsea_output[order(pval), ], 1)$pathway)
+```
+
+
+This first implementation doesn't give any good results.
+
+Let's try with the original GSEA implementation and a different set of curated genes.
+
+### Original GSEA
+
+Before running the original GSEA method, we need to generate the input files: .gct and .cls
+
+For that purpose we can use the bioconductor package: ArrayTools.
+
+```{r}
+#common_gse[rownames(top_20_genes_rf),]
+aux <- common_gse[head(rownames(urf_vars)[order(-urf_vars)],20),]
+#rownames(urf_vars)
+urf_top
+#head(rownames(urf_vars)[order(-urf_vars)], 20)
+aux <- common_gse[head(rownames(urf_vars)[order(-urf_vars)], 20), ]
+aux
+```
+
+```{r}
+
+#c_gse_expset<-new("ExpressionSet", exprs=as.matrix(common_gse))
+c_gse_expset<-new("ExpressionSet", exprs=as.matrix(aux))
+#c_gse_expset<-new("ExpressionSet", exprs=as.matrix(common_gse_norm))
+
+#rownames(common_gse)
+#output.gct(common_gse_21 , filename = "data/genes_to_gsea")
+output.gct(c_gse_expset,
+           filename = "data/genes_to_gsea_5")
+#output.cls(target=, variable = , filename="data/phenotype_to_gsea")
+```
+
+As we are missing data for the classes in the datasets, we are going to create the .cls file manually following the format description that can be found here:
+http://software.broadinstitute.org/cancer/software/genepattern/file-formats-guide
+
+```{r}
+#pData(phenoData(common_gse_21))
+#fileConn<-file("data/phenotype_to_gsea.cls")
+#writeLines(as.character(as.list(cl)), fileConn)
+#write(paste(cl, sep = " "), fileConn)
+#close(fileConn)
+
+#FF <- as.matrix(t(cl))
+
+
+# This is not idempotent. For testing I have added manually the following info:
+# 76 2 1
+# # MCL DDR
+
+cls_header_1 <- c("76 2 1")
+cls_header_2 <- c("# MCL DDR")
+
+fileConn<-file("data/phenotype_to_gsea.cls")
+writeLines(cls_header_1, fileConn)
+close(fileConn)
+fileConn<-file("data/phenotype_to_gsea.cls", open = "a")
+writeLines(cls_header_2, fileConn)
+close(fileConn)
+
+write.table(as.matrix(t(cl)), file = "data/phenotype_to_gsea.cls", sep = " ", 
+            col.names = FALSE, append=TRUE, quote = FALSE, row.names = FALSE)
+
+#fwrite(as.list(paste(cl, sep = " ")), "data/phenotype_to_gsea.cls")
+#sink("data/phenotype_to_gsea.cls")
+#sink(cl)
+#sink()
+```
+
+Now that we have both files ready, we can run the original GSEA method.
+
+```{r, echo=FALSE}
+# GSEA 1.0 -- Gene Set Enrichment Analysis / Broad Institute 
+#
+# R script to run GSEA Analysis of the Leukemia ALL/AML vs C1 example (cut and paste into R console)
+
+#GSEA.program.location <- "/Users/antmil/Dropbox/UOC/Treball_Final_Master/dev/gsea_sw/GSEA-P-R/GSEA.1.0.R"
+
+GSEA.program.location <- '../gsea_sw/GSEA-P-R/GSEA.1.0.R'
+
+#GSEA.program.location <- c("../gsea_sw/GSEA-P-R/GSEA.1.0.R")
+
+#GSEA.program.location <- file.path("../gsea_sw/GSEA-P-R/GSEA.1.0.R")
+
+#GSEA.program.location <-file("../gsea_sw/GSEA-P-R/GSEA.1.0.R")
+#close(GSEA.program.location)
+source(GSEA.program.location, verbose=T, max.deparse.length=9999)
+```
+
+```{r}
+GSEA(                                                                    # Input/Output Files :-------------------------------------------
+ input.ds =         "data/genes_to_gsea_2.gct",           # Input gene expression Affy dataset file in RES or GCT format
+ input.cls =        "data/phenotype_to_gsea.cls",           # Input class vector (phenotype) file in CLS format
+ gs.db =            "../gsea_sw/GSEA-P-R/GeneSetDatabases/C1.gmt",         # Gene set database in GMT format
+ output.directory = "output_gsea/",        # Directory where to store output and results (default: "")
+#  Program parameters :-------------------------------------------------------------------------------------------------------------------------
+ doc.string            = "CCND1",   # Documentation string used as a prefix to name result files (default: "GSEA.analysis")
+ non.interactive.run   = F,               # Run in interactive (i.e. R GUI) or batch (R command line) mode (default: F)
+ reshuffling.type      = "sample.labels", # Type of permutation reshuffling: "sample.labels" or "gene.labels" (default: "sample.labels" 
+# nperm                 = 1000,            # Number of random permutations (default: 1000)
+ nperm                 = 100,            # Number of random permutations (default: 1000)
+ weighted.score.type   =  1,              # Enrichment correlation-based weighting: 0=no weight (KS), 1= weigthed, 2 = over-weigthed (default: 1)
+ nom.p.val.threshold   = -1,              # Significance threshold for nominal p-vals for gene sets (default: -1, no thres)
+ fwer.p.val.threshold  = -1,              # Significance threshold for FWER p-vals for gene sets (default: -1, no thres)
+ fdr.q.val.threshold   = 0.25,            # Significance threshold for FDR q-vals for gene sets (default: 0.25)
+ topgs                 = 20,              # Besides those passing test, number of top scoring gene sets used for detailed reports (default: 10)
+ adjust.FDR.q.val      = F,               # Adjust the FDR q-vals (default: F)
+ gs.size.threshold.min = 15,              # Minimum size (in genes) for database gene sets to be considered (default: 25)
+ gs.size.threshold.max = 500,             # Maximum size (in genes) for database gene sets to be considered (default: 500)
+ reverse.sign          = F,               # Reverse direction of gene list (pos. enrichment becomes negative, etc.) (default: F)
+ preproc.type          = 0,               # Preproc.normalization: 0=none, 1=col(z-score)., 2=col(rank) and row(z-score)., 3=col(rank). (def: 0)
+ random.seed           = 3338,            # Random number generator seed. (default: 123456)
+ perm.type             = 0,               # For experts only. Permutation type: 0 = unbalanced, 1 = balanced (default: 0)
+ fraction              = 1.0,             # For experts only. Subsampling fraction. Set to 1.0 (no resampling) (default: 1.0)
+ replace               = F,               # For experts only, Resampling mode (replacement or not replacement) (default: F)
+ save.intermediate.results = F,           # For experts only, save intermediate results (e.g. matrix of random perm. scores) (default: F)
+ OLD.GSEA              = F,               # Use original (old) version of GSEA (default: F)
+ use.fast.enrichment.routine = T          # Use faster routine to compute enrichment for random permutations (default: T)
+)
+#-----------------------------------------------------------------------------------------------------------------------------------------------
+```
+
+```{r}
+# Overlap and leading gene subset assignment analysis of the GSEA results
+
+GSEA.Analyze.Sets(
+   directory           = "output_gsea/",        # Directory where to store output and results (default: "")
+   topgs = 20,                                                           # number of top scoring gene sets used for analysis
+   height = 16,
+   width = 16
+)
+```
+
+```{r}
+aux_cls <- GSEA.ReadClsFile("data/phenotype_to_gsea.cls")
+aux_cls
+aux_cls$class.v
+aux_cls$phen
+```
+
+## Feature Selection
+
+### Correlation with CCND1
+
+
+For the Feature Selection step, we are going to use some Machine Learning methods that will help us to find the optimum set of genes (based on the results from RankProd).
+
+For this step, we also want to work with a merged dataset, but in this case, the type of methods that we are going to use are more sensitive to biases, and therefore, we are going to perform a different normalization than the log2 transformation executed before.
+In this case, we are going use a z-normalization to have all the data in the same scale, and make it possible to compare between both datasets.
+
+```{r}
+gse_21_norm <- ranked_gse_21 # gse_21452
+gse_25_norm <- ranked_gse_25 # gse_25848
+
+# exprs(gse_21_norm) <- t(scale(t(exprs(gse_21452))))
+# exprs(gse_25_norm) <- t(scale(t(exprs(gse_25848))))
+
+exprs(gse_21_norm) <- t(scale(t(exprs(gse_21_norm))))
+exprs(gse_25_norm) <- t(scale(t(exprs(gse_25_norm))))
+```
+
+```{r}
+gse_21_norm_ids <- pData(featureData(gse_21_norm))$ENTREZ_GENE_ID
+gse_21_norm_ids <- as.numeric(unlist(lapply(gse_21_norm_ids, get_first_item)))
+gse_25_norm_ids <- pData(featureData(gse_25_norm))$Entrez_Gene_ID
+head(gse_21_norm_ids)
+head(gse_25_norm_ids)
+```
+
+```{r}
+# Get the indexes from gse_25 that appears in gse_21
+matched_norm_idx <- match(gse_21_norm_ids, gse_25_norm_ids)
+matched_norm_idx
+
+# Keep only the matched elements in gse_21
+idx_to_keep <- is.na(matched_norm_idx)
+idx_to_keep
+common_gse_21_norm <- gse_21_norm[!idx_to_keep]
+
+# Keep only the matched elements gse_25
+common_gse_25_norm <- gse_25_norm[matched_norm_idx]
+
+# Remove NA
+idx_to_rmv <- which(apply(pData(featureData(common_gse_25_norm)), 1, function(x) any ( is.na(x))))
+idx_to_rmv
+common_gse_25_norm <- common_gse_25_norm[-idx_to_rmv,]
+```
+
+As we have removed the NAs in gse_25, we need to match again.
+
+```{r}
+gse_21_norm_ids <- pData(featureData(common_gse_21_norm))$ENTREZ_GENE_ID
+gse_21_norm_ids <- as.numeric(unlist(lapply(gse_21_norm_ids, get_first_item)))
+gse_25_norm_ids <- pData(featureData(common_gse_25_norm))$Entrez_Gene_ID
+
+matched_norm_idx <- match(gse_25_norm_ids, gse_21_norm_ids)
+common_gse_21_norm <- common_gse_21_norm[matched_norm_idx]
+```
+
+Just to be sure, let's check the first values of the entrez_gene_ids for both datasets.
+
+```{r}
+head(pData(featureData(common_gse_21_norm))$ENTREZ_GENE_ID)
+head(pData(featureData(common_gse_25_norm))$Entrez_Gene_ID)
+```
+
+```{r}
+common_gse_norm <- cbind.data.frame(data.frame(exprs(common_gse_21_norm)),
+                                    data.frame(exprs(common_gse_25_norm)))
+head(common_gse_norm)
+```
+
+```{r}
+# Let's look at the CCND1 row
+#common_gse_norm["X208711_s_at", ]
+common_gse_norm["X208712_at",]
+#exprs(gse_21_norm["208712_at"])
+```
+
+Now we have exactly the same data frame with the common genes, as before, but this time the values are scaled.
+
+For the Feature Selection we are going to use supervised and unsupervised methods. For the supervised methods we will need to be able to create a model to classify the data, as this methods will try to improve the results of that model using different sets of features. In that way, they will be able to identify the most important features for the creation of a model.
+
+Our issue is that we don't have any variable that we can use to classify our data, but we know that we want to make a comparison in terms of the CCND1 gene. Therefore, we are going to create two new features:
+1. A new feature that will show the correlation between a gene with the CCND1.
+2. A second feature that will classify the correlation in terms of hight, medium, low correlation. It will be a factor with the following possible values: H, M, L.
+
+```{r}
+#cor(t(common_gse_norm))
+head(data.frame(t(common_gse_norm)))
+head(data.frame(cor(data.frame(t(common_gse_norm)))))
+data.frame(cor(data.frame(t(common_gse_norm)))["X208712_at", ])
+```
+
+
+```{r}
+#kNN(data.frame(cor(data.frame(t(common_gse_norm)))["X208712_at", ]), k=3)
+set.seed(42)
+cor_factor <- kmeans(data.frame(cor(data.frame(t(common_gse_norm)))["X208712_at", ]), centers = 3)
+```
+
+```{r}
+aux <- cbind(data.frame(cor(data.frame(t(common_gse_norm)))["X208712_at", ]),
+             data.frame(cor_factor$cluster))
+colnames(aux) <- c("cor_ccnd1", "cor_factor")
+#typeof(cor_factor)
+aux$cor_factor <- factor(aux$cor_factor)
+levels(aux$cor_factor) <- c("Low","Medium","High")
+head(aux)
+#cor_factor$centers
+```
+
+```{r}
+common_gse_norm_cor <- cbind(common_gse_norm, aux)
+head(common_gse_norm_cor)
+```
+
+Now that we have classified our genes in terms of correlation with CCND1, we can use only the ones classified with higher correlation.
+
+
+----
+
+```{r}
+set.seed(42)
+#urf <- randomForest(t(common_gse_norm))
+urf <- randomForest(t(common_gse))
+```
+
+```{r}
+set.seed(42)
+urf <- randomForest(t(common_gse_norm))
+```
+
+```{r}
+#summary(urf)
+#MDSplot(urf)
+```
+
+```{r}
+urf_vars <- data.frame(importance(urf))
+urf_vars
+rownames(urf_vars)[order(-urf_vars)]
+# get the top 20
+urf_top <- head(urf_vars[order(-urf_vars),], 20)
+urf_top
+#rownames(urf_vars)
+#rownames(urf_vars[order(-urf_vars),])
+```
+
+
+
+
+----
+
+```{r}
+# Up Regulated genes
+common_gse[rownames(tables$Table1), ]
+```
+
+```{r}
+# Down Regulated genes
+common_gse[rownames(tables$Table2), ]
+```
+
+```{r}
+#head(t(scale(t(common_gse))))
+common_gse["X208711_s_at", ]
+t(scale(t(common_gse["X208712_at",])))
+```
 
 ## GSEA
 
@@ -483,6 +1056,7 @@ common_gse_norm <- cbind.data.frame(data.frame(exprs(common_gse_21_norm)),
 ```{r}
 # Let's look at the CCND1 row
 common_gse_norm["X208711_s_at", ]
+#common_gse_norm["X208712_at",]
 ```
 
 ```{r}
@@ -521,4 +1095,39 @@ aux[,"ILMN_1688480"]
 #head(t(aux))
 #is.na(t(aux))
 sapply(data.frame(exprs(gse_25848)), function(x)(sum(is.na(x))))
+```
+
+
+```{r}
+data.frame(log2(exprs(common_gse_21)))
+data.frame(log2(exprs(common_gse_25)))
+#sapply(data.frame(log2(exprs(common_gse_21))), function(x)(sum(is.na(x))))
+log2(60172.14)
+log2(5.966658705)
+scale(9.278)
+z
+```
+
+
+```{r}
+# We can also use: RP.adv.out <- RP.advance()
+
+RP.out.norm <- RankProducts(common_gse_norm, cl,
+                       logged=TRUE, rand=42,
+                       gene.names=rownames(common_gse_norm),
+                       plot = TRUE)
+```
+
+```{r}
+#tables <- topGene(RP.out, cutoff = 0.05, method = "pfp", gene.names=rownames(common_gse))
+tables <- topGene(RP.out.norm, cutoff = 0.05, method = "pval", gene.names=rownames(common_gse_norm))
+```
+
+
+```{r}
+
+length(common_gse[,1])
+
+length(as.numeric(unlist(lapply(pData(featureData(common_gse_21))$ENTREZ_GENE_ID, get_first_item))))
+length(pData(featureData(common_gse_25))$Entrez_Gene_ID)
 ```
