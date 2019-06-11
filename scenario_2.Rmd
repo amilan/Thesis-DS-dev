@@ -1,0 +1,815 @@
+---
+title: "TFM - Scenario 2"
+author: "Antonio Milán Otero"
+date: '`r format(Sys.Date(),"%e de %B %Y")`'
+output:
+  html_document:
+    toc: yes
+    number_sections: yes
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libraries, include=FALSE}
+library(knitr)
+#library(lubridate)
+library(stringr)
+#library(psych)
+library(GEOquery)
+library(affy)
+# RankProd have a dependency on Rmpfr and this library needs: libmprf-dev
+# in ubuntu or derivatives it can be installed with:
+# sudo apt-get install libmpfr-dev
+library(RankProd)
+library(multiClust)
+library(caret)
+# Imputation
+library(VIM) # for the KNN imputation
+library(Hmisc) # useful for the mean imputation
+library(randomForest)
+# fgsea from bioconductor
+library(fgsea)
+# 
+library(ArrayTools)
+library(stringr)
+```
+
+# Study of the Transcriptional Function of Cyclin D1 in Leukemia - Scenario 2
+
+## Load the datasets
+
+For this study we will make use of the following datasets available in the Gene Expression Omnibus (GEO) repository:
+
+* GSE21452
+* GSE25848
+
+The first step will be the loading of the datasets. For that purpose we will use the bioconductor package GEOquery. This package will allow us to load the dataset directly from the filesystem or to download it directly using the same command.
+In my case, I have already downloade the dataset, and I will use it from the filesystem.
+
+```{r, results='hide'}
+gse_21452 <- getGEO(filename="data/GSE21452_series_matrix.txt.gz")
+# In case you don't have it donwloaded, this dataset can be obtained with the command:
+# gse21452 <- getGEO("GSE21452", GSEMatrix=TRUE)
+# the only difference to keep in mind is that the second command will create a list of ExpressionSet, and therefore, the treatement of that class will be slidely different.
+```
+
+We explore our loaded data now.
+
+```{r}
+show(gse_21452)
+```
+
+```{r}
+head(pData(phenoData(gse_21452)))
+```
+
+```{r}
+# summary(pData(phenoData(gse_21452)))
+head(exprs(gse_21452),1)
+```
+
+Now we can load the data regarding DDR, following the same procedure as before.
+
+```{r, results='hide'}
+gse_25848 <- getGEO(filename="data/GSE25848_series_matrix.txt.gz")
+```
+
+```{r}
+show(gse_25848)
+```
+
+```{r}
+head(pData(phenoData(gse_25848)))
+```
+
+```{r}
+# summary(pData(phenoData(gse_21452)))
+head(exprs(gse_25848))
+```
+
+First thing to notice from this data is that we have many NA values.
+In our study we are going to make a comparison between the expressed genes in both datasets, and we can assume that if no data is available for that gene, it is not expressed and can be removed.
+
+Let's see how many NA do we have.
+
+```{r}
+sapply(data.frame(exprs(gse_21452)), function(x)(sum(is.na(x))))
+```
+
+```{r}
+sapply(data.frame(exprs(gse_25848)), function(x)(sum(is.na(x))))
+```
+
+```{r}
+length(data.frame(exprs(gse_25848))$GSM634846) - 32443
+```
+
+We have 32443 out of 48803 genes without any data, in other words, we have only 16360 genes with an expression value.
+
+```{r}
+# Remove the NA entries keeping the ExpressionSet object
+idx_to_rmv <- which(apply(exprs(gse_25848), 1, function(x) any ( is.na(x))))
+gse_25848 <- gse_25848[-idx_to_rmv,]
+```
+
+We must also notice that the assay data in the expression set (obtained by expr(gse_XXXXX)) has features (genes) as rows and samples as columns. This is important to keep in mind for the later data processing.
+
+## Data Normalization
+
+Before running any normalization process, it is worth to have a look to the process that has been followed to generate the datasets.
+
+```{r}
+head(gse_25848$data_processing, 1)
+```
+
+```{r}
+head(gse_21452$data_processing.1, 1)
+```
+
+```{r, eval=FALSE, echo=FALSE}
+# TODO: As we have the p values for the expressionSet of each dataset, 
+#       I'm not sure about the necessity of more normalization.
+#       Maybe log2 or scale the data ... ?
+# update:
+#       Seems that the GSE21452 series have been log2 transformed.
+#       Let's log2 transform the data from the GSE25848.
+#       But I'm afraid that we should get the raw data and apply the
+#       same normalization process to both datasets.
+# update 2019-05-14:
+#       Not sure if this normalization is correct. Is it done by column,by row or taking the whole matrix?
+# update:
+#       To scale properly we need to transponse the matrix.
+```
+
+~~Let's normalize the values of both datasets.~~
+
+Instead of normalize it here we can also apply this normalization just before merging the datasets.
+That will be more convinient for our purposes, so we are going to skip the normalization step for the moment.
+
+```{r, eval=FALSE, echo=FALSE}
+# Instead of normalize it here we can also apply this normalization just before merging the datasets.
+# (as we are going to select the top ranked genes from each individual dataset, first)
+#exprs(gse_21452) <- t(scale(t(exprs(gse_21452))))
+#exprs(gse_25848) <- t(scale(t(exprs(gse_25848))))
+```
+
+## Linear Model for Microarray Analysis
+
+The first idea was to use a linear model for microarray analysis, but that step is not going to be necessary at this moment as we are going to select the Genes using a ranking based on the standard deviation (using the package multiClust).
+
+## Ranking of Genes
+
+Before doing the intersection of both datasets we need to rank the most differentially expresses genes and keep the top ones.
+We are going to make this ranking based on the standard deviation.
+
+For testing purposes we are going to use the multiClust package, but at the end of this section there is also an example of how to do the same process just with R.
+
+
+```{r}
+# Actually, we can rank by the standard desviation much easier than with the probe_rank method.
+# as shown at the end of this section.
+
+WriteMatrixToFile(tmpMatrix=exprs(gse_21452), tmpFileName="GSE21452.Norm.expression.txt",
+    blnRowNames=TRUE, blnColNames=TRUE)
+    
+WriteMatrixToFile(tmpMatrix=exprs(gse_25848), tmpFileName="GSE21452.Norm.expression.txt",
+    blnRowNames=TRUE, blnColNames=TRUE)
+```
+
+(I don't like to use files in between ... but it is the way how probe_ranking works.)
+
+```{r}
+gse_21_expr_file <- system.file("extdata", "GSE21452.Norm.expression.txt", package = "multiClust")
+
+gse_25_expr_file <- system.file("extdata", "GSE21452.Norm.expression.txt", package = "multiClust")
+
+```
+
+
+```{r}
+# Call probe_ranking function
+# Select for 10000 probes
+# Choose genes using the SD_Rank method
+ranked.exprs_gse21 <- probe_ranking(input=gse_21_expr_file,
+    probe_number=10000,
+    probe_num_selection="Fixed_Probe_Num",
+    data.exp=exprs(gse_21452), 
+    #method="CV_Rank")
+    method="SD_Rank")
+
+ranked.exprs_gse25 <- probe_ranking(input=gse_25_expr_file,
+    probe_number=10000,
+    probe_num_selection="Fixed_Probe_Num",
+    data.exp=exprs(gse_25848), 
+    #method="CV_Rank")
+    method="SD_Rank")
+```
+
+Let's have a look to the generated selection.
+
+```{r}
+head(ranked.exprs_gse21)
+head(ranked.exprs_gse25)
+```
+
+The above methodology is equivalent to executing:
+
+```{r, eval=FALSE}
+# Desviació Estàndard
+aux <- data.frame(sort(sapply(data.frame(t(exprs(gse_25848))), sd), decreasing = TRUE))
+#rownames(aux)
+#data.frame(exprs(gse_25848)[rownames(aux),])
+aux <- gse_25848[rownames(aux),]
+ranked_exprs_gse25 <- head(exprs(aux), 10000)
+head(ranked_exprs_gse25)
+```
+
+```{r, eval=FALSE}
+# Desviació Estàndard
+#aux <- data.frame(sort(sapply(data.frame(t(exprs(gse_21452))), sd), decreasing = TRUE))
+#head(lapply(t(exprs(gse_21452)), sd))
+aux <- as.matrix(sort(apply(t(exprs(gse_21452)), 2, sd), decreasing = TRUE))
+# aux <- data.frame(sort(sapply(data.frame(t(exprs(gse_21452))), sd), decreasing = TRUE))
+#rownames(aux)
+#aux
+#data.frame(exprs(gse_25848)[rownames(aux),])
+ranked_exprs_gse21 <- gse_21452[rownames(aux),]
+ranked_exprs_gse21 <- head(aux, 10000)
+head(ranked_exprs_gse21)
+```
+
+But, for convenience, we are going to continue with the ranking generated by probe_ranking.
+
+## Intersection
+
+The next step is to keep only the expressed genes appearing in both datasets. As we can notice, genes have different names in each dataset, therefore, we will need to get the gene name from the featuredata.
+
+Using rowname and featuredata/data/id, FeatureData/data/Entrez_gene_id
+
+```{r}
+# Just checking that cyclin d1 is in the selection.
+ranked.exprs_gse21["208712_at",]
+#exprs(gse_21452)["208712_at",]
+#gse_21_norm["208711_s_at",]
+ranked.exprs_gse21["208711_s_at",] # even with 3000 is not selected.
+#data.frame(exprs(gse_21452)["208711_s_at",])
+ranked.exprs_gse25["ILMN_1688480",]
+```
+
+```{r}
+ranked_exprs_gse21["208712_at",]
+ranked_exprs_gse25["ILMN_1688480",]
+```
+
+```{r}
+ranked.exprs_gse25["ILMN_1688480",]
+#gse_25848_clean["ILMN_1688480",]
+data.frame(exprs(gse_25848["ILMN_1688480",]))
+```
+
+```{r}
+# Indexes for the genes to keep
+gse_21_idx <- match(rownames(data.frame(ranked.exprs_gse21)),
+                    pData(featureData(gse_21452))$ID)
+gse_25_idx <- match(rownames(data.frame(ranked.exprs_gse25)),
+                    pData(featureData(gse_25848))$ID)
+```
+
+```{r}
+# Get the final ExpressionSet with only the ranked genes
+ranked_gse_21 <- gse_21452[gse_21_idx,]
+ranked_gse_25 <- gse_25848[gse_25_idx,]
+```
+
+```{r}
+
+# Get the Entrez_Gene_ID used to match genes in both datasets.
+# I'm using Entrez_Gene_ID because Symbols or GB_ACC are not
+# suitable for a match as that data is quite dirty.
+gse_21_ids <- pData(featureData(ranked_gse_21))$ENTREZ_GENE_ID
+gse_25_ids <- pData(featureData(ranked_gse_25))$Entrez_Gene_ID
+
+#gse_21_ids <- pData(featureData(gse_21452))$`Gene Symbol`[gse_21_idx]
+#gse_25_ids <- pData(featureData(gse_25848))$Symbol[gse_25_idx]
+
+# There are genes without ID!!!! Let's use symbols!!! (same problem with symbols)
+##head(gse_21_ids)
+##head(gse_25_ids)
+
+### GB_ACC
+#gse_21_ids <- pData(featureData(ranked_gse_21))$GB_ACC
+#gse_25_ids <- pData(featureData(ranked_gse_25))$GB_ACC
+
+# Again ... same problems with GB_ACC
+
+head(gse_21_ids)
+head(gse_25_ids)
+```
+
+```{r, echo=FALSE, eval=FALSE}
+# Used to clean GB_ACC
+# TODO: To be removed
+
+# Remove the . on gse_25_ids
+
+#get_first_item <- function(items){
+#  first_item <- unlist(strsplit(items, "[.]"))[1]
+#  return(first_item)
+#}
+
+#gse_25_ids <- unlist(lapply(gse_25_ids, get_first_item))
+#length(gse_21_ids)
+#length(gse_25_ids)
+
+#sapply(data.frame(gse_21_ids), function(x)(sum(is.na(x))))
+#sapply(data.frame(gse_25_ids), function(x)(sum(is.na(x))))
+
+#gse_25_ids <- na.omit(gse_25_ids)
+```
+
+Before merging, we need to remove the multiple entrez_gene_id entries and keep only the first one (using the first one because they are already ranked).
+
+```{r}
+#unlist(strsplit(gse_21_ids[3], "[ ///]"))[1]
+
+get_first_item <- function(items){
+  first_item <- unlist(strsplit(items, "[ ///]"))[1]
+  return(first_item)
+}
+#get_first_item(gse_21_ids)
+
+#strsplit(gse_21_ids, '^\w+.\w+')
+gse_21_ids <- as.numeric(unlist(lapply(gse_21_ids, get_first_item)))
+#symbols_gse25 <- unlist(lapply(gse_25_ids, get_first_item))
+```
+
+Now that we have cleaned the ids, let's perform the match.
+
+```{r}
+# Get the indexes from gse_25 that appears in gse_21
+matched_idx <- match(gse_21_ids, gse_25_ids)
+
+# Keep only the matched elements in gse_21
+idx_to_keep <- is.na(matched_idx)
+common_gse_21 <- ranked_gse_21[!idx_to_keep]
+
+# Keep only the matched elements gse_25
+common_gse_25 <- ranked_gse_25[matched_idx]
+
+# Remove NA
+idx_to_rmv <- which(apply(pData(featureData(common_gse_25)), 1, function(x) any ( is.na(x))))
+common_gse_25 <- common_gse_25[-idx_to_rmv,]
+```
+
+As we have removed the NAs in gse_25, we need to match again.
+
+```{r}
+gse_21_ids_2 <- pData(featureData(common_gse_21))$ENTREZ_GENE_ID
+gse_25_ids_2 <- pData(featureData(common_gse_25))$Entrez_Gene_ID
+gse_21_ids_2 <- as.numeric(unlist(lapply(gse_21_ids_2, get_first_item)))
+
+matched_idx_2 <- match(gse_25_ids_2, gse_21_ids_2)
+common_gse_21 <- common_gse_21[matched_idx_2]
+```
+
+Just to be sure, let's check the first values of the entrez_gene_ids for both datasets.
+
+```{r}
+head(pData(featureData(common_gse_21))$ENTREZ_GENE_ID)
+head(pData(featureData(common_gse_25))$Entrez_Gene_ID)
+```
+
+
+## Correlation with CCND1
+
+For this step, we also want to work with a merged dataset, but in this case, the type of methods that we are going to use are more sensitive to biases, and therefore, we are going to perform a different normalization than the log2 transformation executed in the scenario 1.
+
+In this case, we are going use a z-normalization to have all the data in the same scale, and make it possible to compare between both datasets.
+
+```{r}
+gse_21_norm <- ranked_gse_21 # gse_21452
+gse_25_norm <- ranked_gse_25 # gse_25848
+
+# exprs(gse_21_norm) <- t(scale(t(exprs(gse_21452))))
+# exprs(gse_25_norm) <- t(scale(t(exprs(gse_25848))))
+
+exprs(gse_21_norm) <- t(scale(t(exprs(gse_21_norm))))
+exprs(gse_25_norm) <- t(scale(t(exprs(gse_25_norm))))
+```
+
+```{r}
+gse_21_norm_ids <- pData(featureData(gse_21_norm))$ENTREZ_GENE_ID
+gse_21_norm_ids <- as.numeric(unlist(lapply(gse_21_norm_ids, get_first_item)))
+gse_25_norm_ids <- pData(featureData(gse_25_norm))$Entrez_Gene_ID
+head(gse_21_norm_ids)
+head(gse_25_norm_ids)
+```
+
+```{r}
+# Get the indexes from gse_25 that appears in gse_21
+matched_norm_idx <- match(gse_21_norm_ids, gse_25_norm_ids)
+#matched_norm_idx
+
+# Keep only the matched elements in gse_21
+idx_to_keep <- is.na(matched_norm_idx)
+#idx_to_keep
+common_gse_21_norm <- gse_21_norm[!idx_to_keep]
+
+# Keep only the matched elements gse_25
+common_gse_25_norm <- gse_25_norm[matched_norm_idx]
+
+# Remove NA
+idx_to_rmv <- which(apply(pData(featureData(common_gse_25_norm)), 1, function(x) any ( is.na(x))))
+#idx_to_rmv
+common_gse_25_norm <- common_gse_25_norm[-idx_to_rmv,]
+```
+
+As we have removed the NAs in gse_25, we need to match again.
+
+```{r}
+gse_21_norm_ids <- pData(featureData(common_gse_21_norm))$ENTREZ_GENE_ID
+gse_21_norm_ids <- as.numeric(unlist(lapply(gse_21_norm_ids, get_first_item)))
+gse_25_norm_ids <- pData(featureData(common_gse_25_norm))$Entrez_Gene_ID
+
+matched_norm_idx <- match(gse_25_norm_ids, gse_21_norm_ids)
+common_gse_21_norm <- common_gse_21_norm[matched_norm_idx]
+```
+
+Just to be sure, let's check the first values of the entrez_gene_ids for both datasets.
+
+```{r}
+head(pData(featureData(common_gse_21_norm))$ENTREZ_GENE_ID)
+head(pData(featureData(common_gse_25_norm))$Entrez_Gene_ID)
+```
+
+```{r}
+
+common_gse_norm <- common_gse_21_norm
+common_gse_norm <- as.matrix(cbind.data.frame(data.frame(exprs(common_gse_21_norm)),
+                                              data.frame(exprs(common_gse_25_norm))))
+rownames(common_gse_norm) <- rownames(common_gse_21_norm)
+head(common_gse_norm)
+```
+
+```{r}
+# Let's look at the CCND1 row
+#common_gse_norm["X208711_s_at", ]
+common_gse_norm["208712_at",]
+#exprs(gse_21_norm["208712_at"])
+```
+
+Now we have exactly the same data frame with the common genes, as before (scenario 1), but this time the values are scaled.
+
+> TODO: Review this paragraph
+For the Feature Selection we are going to use supervised and unsupervised methods. For the supervised methods we will need to be able to create a model to classify the data, as this methods will try to improve the results of that model using different sets of features. In that way, they will be able to identify the most important features for the creation of a model.
+
+Our issue is that we don't have any variable that we can use to classify our data, but we know that we want to make a comparison in terms of the CCND1 gene. Therefore, we are going to create two new features:
+1. A new feature that will show the correlation between a gene with the CCND1.
+2. A second feature that will classify the correlation in terms of hight, medium, low correlation. It will be a factor with the following possible values: H, M, L.
+
+```{r}
+#cor(t(common_gse_norm))
+#head(data.frame(t(common_gse_norm)))
+#head(data.frame(cor(data.frame(t(common_gse_norm)))))
+
+ccnd1_cor_matrix <- as.matrix(cor(as.matrix(t(common_gse_norm)))["208712_at", ])
+#data.frame(cor(data.frame(t(common_gse_norm)))["X208712_at", ])
+```
+
+> TODO: Add some graphics here to see the correlation
+
+```{r}
+#kNN(data.frame(cor(data.frame(t(common_gse_norm)))["X208712_at", ]), k=3)
+set.seed(42)
+#cor_factor <- kmeans(data.frame(cor(data.frame(t(common_gse_norm)))["X208712_at", ]), centers = 3)
+cor_factor <- kmeans(ccnd1_cor_matrix, centers = 3)
+head(cor_factor)
+#class(cor_factor)
+```
+
+
+```{r}
+str(cor_factor)
+```
+
+> TODO: check compactness between clusters, make some evaluation here
+
+```{r}
+#aux <- cbind(data.frame(cor(data.frame(t(common_gse_norm)))["X208712_at", ]),
+#             data.frame(cor_factor$cluster))
+
+aux <- cbind(ccnd1_cor_matrix,
+             (cor_factor$cluster))
+
+colnames(aux) <- c("cor_ccnd1", "cor_factor")
+#typeof(cor_factor)
+#aux$cor_factor
+
+# We cannot use data.frames because of the duplicated names
+#aux$cor_factor <- factor(aux$cor_factor)
+#levels(aux$cor_factor) <- c("Low","Medium","High")
+head(aux)
+#cor_factor$centers
+```
+
+```{r}
+plot(aux, col=aux[,-1], yaxt='n', ylab='Cluster', xlab='Correlation with CCND1')
+axis(side=2, at=c(1,2,3))
+```
+
+```{r}
+common_norm_names <- rownames(common_gse_norm)
+common_gse_norm_cor <- as.matrix(cbind(common_gse_norm, aux))
+#common_gse_norm_fact <- 
+#head(cbind(as.matrix(common_gse_norm, aux)))
+head(common_gse_norm_cor)
+```
+
+Now that we have classified our genes in terms of correlation with CCND1, we can use only the ones classified with higher correlation.
+
+```{r}
+#common_gse_norm_cor[common_gse_norm_cor[, "cor_factor"]==3,]
+common_gse_norm_cor["208712_at", "cor_factor"]
+cor_factor$centers
+```
+
+We can get the group 2 with positive correlation and group 3 with negative correlation. The group 1 has the smaller correlation.
+
+```{r}
+commons_norm_cor_1 <- common_gse_norm_cor[common_gse_norm_cor[, "cor_factor"]==1,]
+commons_norm_cor_2 <- common_gse_norm_cor[common_gse_norm_cor[, "cor_factor"]==2,]
+commons_norm_cor_3 <- common_gse_norm_cor[common_gse_norm_cor[, "cor_factor"]==3,]
+```
+
+```{r}
+nrow(commons_norm_cor_2)
+```
+
+## Feature Selection
+
+### Unsupervised Feature Selection
+
+We can now perform a feature selection on the correlated genes. For that, we are going to start with an unsupervised random forest.
+
+```{r}
+set.seed(42)
+
+rf_cor_1 <- randomForest(t(commons_norm_cor_1))
+rf_cor_2 <- randomForest(t(commons_norm_cor_2))#, importance=TRUE, proximity = TRUE)
+rf_cor_3 <- randomForest(t(commons_norm_cor_3))
+```
+
+```{r}
+rf_cor_1_vars <- importance(rf_cor_1)
+rf_cor_2_vars <- importance(rf_cor_2)
+rf_cor_3_vars <- importance(rf_cor_3)
+#head(urf_vars)
+#rownames(urf_vars)[order(-urf_vars)]
+#rownames(drf_vars)[order(-drf_vars)]
+```
+
+```{r}
+summary(rf_cor_2)
+```
+
+```{r}
+# Let's find in which position do we have the cyclin d1
+match(c("208712_at"), rownames(as.matrix(rf_cor_2_vars[order(-rf_cor_2_vars),])))
+```
+
+```{r}
+# get the top 20, and the top 205 for the second cluster
+rf_cor_1_top <- as.matrix(head(rf_cor_1_vars[order(-rf_cor_1_vars),], 20))
+rf_cor_2_top <- as.matrix(head(rf_cor_2_vars[order(-rf_cor_2_vars),], 205))
+rf_cor_3_top <- as.matrix(head(rf_cor_3_vars[order(-rf_cor_3_vars),], 20))
+
+#drf_top <- as.matrix(head(drf_vars[order(-drf_vars),], 20))
+head(rf_cor_1_top)
+head(rf_cor_2_top)
+head(rf_cor_3_top)
+#rownames(urf_vars)
+#rownames(urf_vars[order(-urf_vars),])
+```
+
+```{r}
+#class(urf_top)
+#rownames(urf_top)
+top_cor_1_genes <- common_gse_norm[rownames(rf_cor_1_top),]
+top_cor_2_genes <- common_gse_norm[rownames(rf_cor_2_top),]
+top_cor_3_genes <- common_gse_norm[rownames(rf_cor_3_top),]
+#common_gse
+#top_down_genes
+```
+
+```{r, echo=FALSE, eval=FALSE}
+#rownames(top_cor_2_genes)
+#rf_cor_2$proximity
+#plot(rf_cor_2)
+varImpPlot(rf_cor_2)
+```
+
+And finally, we need to save the files that will be used for running GSEA.
+
+```{r}
+
+no_dupl_cor_1_genes <- top_cor_1_genes[!duplicated(rownames(top_cor_1_genes)),]
+no_dupl_cor_2_genes <- top_cor_2_genes[!duplicated(rownames(top_cor_2_genes)),]
+no_dupl_cor_3_genes <- top_cor_3_genes[!duplicated(rownames(top_cor_3_genes)),]
+
+c_gse_expset_cor_1 <-new("ExpressionSet", exprs=as.matrix(no_dupl_cor_1_genes))
+c_gse_expset_cor_2 <-new("ExpressionSet", exprs=as.matrix(no_dupl_cor_2_genes))
+c_gse_expset_cor_3 <-new("ExpressionSet", exprs=as.matrix(no_dupl_cor_3_genes))
+
+output.gct(c_gse_expset_cor_1, filename = "data/c_gse_expset_cor_1")
+output.gct(c_gse_expset_cor_2, filename = "data/c_gse_expset_cor_2")
+output.gct(c_gse_expset_cor_3, filename = "data/c_gse_expset_cor_3")
+```
+
+```{r}
+#match(c("208712_at"), rownames(rf_cor_2_vars))
+#rf_cor_2_vars[70,]
+#rf_cor_2_vars["208712_at",]
+# Let's find in which position do we have the cyclin d1
+match(c("208712_at"), rownames(as.matrix(rf_cor_2_vars[order(-rf_cor_2_vars),])))
+#length(rf_cor_2_vars)
+```
+
+## Extra: Supervised Feature Selection
+
+### Random Forest
+
+Let's create a new column for our common genes dataset containing the information about the procedence of the sample. In that way we can use it as a class and use supervised methods for classification.
+
+```{r}
+#class(common_gse_norm)
+extended_common_cor <- t(common_gse_norm)
+tail(data.frame(extended_common_cor))
+#extended_common_cor
+```
+
+
+```{r}
+#cbind(extended_common_cor, cl)
+#c1_ext <- rep(0, ncol(common_gse_21_norm))
+#c2_ext <- rep(1, ncol(common_gse_25_norm))
+#cl_ext <- c(c1_ext, c2_ext)
+#length(cl_ext)
+```
+
+```{r}
+# Not really needed
+#extended_common_cor <- cbind(extended_common_cor, cl)
+#tail(colnames(extended_common_cor))
+#class(extended_common_cor)
+```
+
+We need to remove duplicates before running randomForest.
+
+```{r}
+#ext_no_dupl_common_cor <- data.frame(extended_common_cor[,!duplicated(colnames(extended_common_cor))])
+ext_no_dupl_common_cor <- extended_common_cor[,!duplicated(colnames(extended_common_cor))]
+
+#ext_no_dupl_common_cor$cl <- factor(ext_no_dupl_common_cor$cl)
+#levels(ext_no_dupl_common_cor$cl) <- c("MCL", "DDR")
+#head(ext_no_dupl_common_cor$cl)
+#tail(ext_no_dupl_common_cor$cl)
+
+#aux$cor_factor <- factor(aux$cor_factor)
+#levels(aux$cor_factor) <- c("Low","Medium","High")
+
+```
+
+Now that we have our data set, let's run a randomForest
+
+```{r}
+set.seed(42)
+class(ext_no_dupl_common_cor)
+
+#ncol(exprs(common_gse_21_norm))
+#ncol(exprs(common_gse_25_norm))
+#c2 <- rep(1, ncol(exprs(common_gse_25)))
+c1 <- rep(0, ncol(exprs(common_gse_21_norm)))
+c2 <- rep(1, ncol(exprs(common_gse_25_norm)))
+cl <- c(c1, c2)
+#cl
+
+# Create labels for classification
+ext_cl_fact <- factor(cl)
+levels(ext_cl_fact) <- c("MCL", "DDR")
+#ext_rf <- randomForest(cl ~ ., data=data.frame(ext_no_dupl_common_cor))
+#ext_rf <- randomForest(y=ext_no_dupl_common_cor$cl, x=ext_no_dupl_common_cor)
+
+# Create the model 
+ext_rf <- randomForest(y=ext_cl_fact, x=ext_no_dupl_common_cor)
+ext_rf_vars <- importance(ext_rf)
+
+# Find the accuracy of the model
+#ext_rf_cv <- rf.crossV
+
+# get the top 20
+ext_rf_top_20 <- as.matrix(head(ext_rf_vars[order(-ext_rf_vars),], 20))
+#ext_rf_top_20
+
+match(c("208712_at"), rownames(as.matrix(ext_rf_vars[order(-ext_rf_vars),])))
+
+#ext_rf_top_200 <- as.matrix(head(ext_rf_vars[order(-ext_rf_vars),], 200))
+#ext_rf_top_300 <- as.matrix(head(ext_rf_vars[order(-ext_rf_vars),], 310))
+ext_rf_top_100 <- as.matrix(head(ext_rf_vars[order(-ext_rf_vars),], 100))
+
+#ext_rf_top_200
+#match(c("208712_at"), rownames(ext_rf_top_300))
+#ext_top_200 <- common_gse_norm[rownames(ext_rf_top_200),]
+#ext_top_300 <- common_gse_norm[rownames(ext_rf_top_300),]
+ext_top_100 <- common_gse_norm[rownames(ext_rf_top_100),]
+
+#no_dupl_ext_top_300 <- ext_top_300[!duplicated(rownames(ext_top_300)),]
+no_dupl_ext_top_100 <- ext_top_100[!duplicated(rownames(ext_top_100)),]
+#match(c("208712_at"), rownames(no_dupl_ext_top_300))
+match(c("208712_at"), rownames(no_dupl_ext_top_100))
+
+#ext_c_gse_expset_cor <-new("ExpressionSet", exprs=as.matrix(no_dupl_ext_top_300))
+ext_c_gse_expset_cor <-new("ExpressionSet", exprs=as.matrix(no_dupl_ext_top_100))
+
+#output.gct(ext_c_gse_expset_cor, filename = "data/no_dupl_ext_top_200")
+##output.gct(ext_c_gse_expset_cor, filename = "data/top_310_rf")
+output.gct(ext_c_gse_expset_cor, filename = "data/top_100_srf")
+
+#as.matrix(head(ext_rf_vars[order(-ext_rf_vars),], 20))
+
+#importance(ext_rf)
+#rf_cor_1_vars
+#ext_rf[order(-ext_rf),]
+```
+
+```{r}
+#print(ext_rf$err.rate)
+#print(ext_rf$err.rate)
+plot(ext_rf$err.rate[,1], ylab="OOB", xlab="Tree Index")
+```
+
+```{r}
+varImpPlot(ext_rf, cex=0.70)
+#impToPlot <- importance(ext_rf)#, scale = FALSE)
+#dotchart(head(sort(impToPlot[,1]),25), cex=0.8, xlim=c(0,0.5), xlab="MeanDecreaseGini")
+```
+
+```{r}
+#print(ext_rf)
+#MDSplot(ext_rf, ext_cl_fact)
+
+
+# Let's use a cross validation version
+ext_rfcv_result <- rfcv(ext_no_dupl_common_cor, ext_cl_fact, cv.fold=10)
+with(ext_rfcv_result, plot(n.var, error.cv, log="x", type="o", lwd=2))
+
+
+```
+
+```{r}
+ext_rfcv_result$predicted
+#importance(ext_rfcv_result)
+```
+
+### Boruta
+
+```{r}
+library(Boruta)
+```
+
+```{r}
+set.seed(42)
+# boruta.bank_train <- Boruta(y~., data = amelia_bank$imputations[[1]], doTrace = 2)
+ext_boruta <- Boruta(y=ext_cl_fact, x=ext_no_dupl_common_cor, doTrace = 2)
+print(ext_boruta)
+```
+
+```{r}
+#importance(ext_boruta)
+getSelectedAttributes(ext_boruta, withTentative = TRUE)
+```
+
+```{r}
+plot(ext_boruta)
+```
+
+### Regression
+
+```{r}
+aux <- data.frame(ext_no_dupl_common_cor)
+colnames(aux) <- as.character(colnames(ext_no_dupl_common_cor))
+colnames(aux)
+#ext_rf_reg <- randomForest(aux[,"208712_at"] ~ ., data=aux, importance=TRUE)
+ext_rf_reg <- randomForest(aux$X208712_at ~ ., data=aux, importance=TRUE)
+#ext_rf_reg <- randomForest(ext_no_dupl_common_cor[,"208712_at"] ~ ., data=data.frame(ext_no_dupl_common_cor),
+#                           importance=TRUE)
+
+ext_rf_reg$importance[order(-ext_rf_reg$importance)]
+order(ext_rf_reg$importance)
+print(ext_rf_reg)
+importance(ext_rf_reg)
+#head(ext_no_dupl_common_cor[,"208712_at"])
+#head(data.frame(ext_no_dupl_common_cor))
+```
