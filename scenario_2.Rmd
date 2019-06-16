@@ -217,7 +217,7 @@ head(ranked.exprs_gse25)
 
 The above methodology is equivalent to executing:
 
-```{r, eval=FALSE}
+```{r, eval=TRUE}
 # Desviació Estàndard
 aux <- data.frame(sort(sapply(data.frame(t(exprs(gse_25848))), sd), decreasing = TRUE))
 #rownames(aux)
@@ -227,7 +227,7 @@ ranked_exprs_gse25 <- head(exprs(aux), 10000)
 head(ranked_exprs_gse25)
 ```
 
-```{r, eval=FALSE}
+```{r, eval=TRUE}
 # Desviació Estàndard
 #aux <- data.frame(sort(sapply(data.frame(t(exprs(gse_21452))), sd), decreasing = TRUE))
 #head(lapply(t(exprs(gse_21452)), sd))
@@ -797,7 +797,7 @@ plot(ext_boruta)
 
 ### Regression
 
-```{r}
+```{r, eval=FALSE, echo=FALSE}
 aux <- data.frame(ext_no_dupl_common_cor)
 colnames(aux) <- as.character(colnames(ext_no_dupl_common_cor))
 colnames(aux)
