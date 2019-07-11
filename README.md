@@ -11,7 +11,7 @@ https://github.com/amilan/Thesis-DS
 The output of this code are the files to be used in the GSEA.
 
 GSEA can be run using the application available here:
-https://github.com/amilan/Thesis-DS
+http://software.broadinstitute.org/gsea/index.jsp
 
 
 ## Author
